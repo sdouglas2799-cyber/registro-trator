@@ -1,84 +1,16 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8">
-  <title>Registro de Trator</title>
-  <link rel="manifest" href="manifest.json">
-  <script>
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("service-worker.js");
-    }
-  </script>
-  <style>
-    body { font-family: Arial; margin: 20px; background: #f8f9fa; }
-    input, select, button { margin: 5px 0; padding: 8px; width: 100%; font-size: 14px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; }
-    th, td { border: 1px solid #000; padding: 6px; text-align: center; }
-    button { cursor: pointer; background: #007bff; color: white; border: none; border-radius: 5px; }
-    button:hover { background: #0056b3; }
-    #mensagem { margin-top: 15px; padding: 10px; border-radius: 5px; font-weight: bold; text-align: center; display: none; }
-    .sucesso { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-    .erro { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-    .botoes-acoes { display: flex; gap: 10px; margin-top: 10px; }
-    .btn-apagar { background: #dc3545; }
-    .btn-apagar:hover { background: #b02a37; }
-  </style>
-</head>
-<body>
-
-<h2>🚜 Registro de Trator</h2>
-
-<label>Data:</label>
-<input type="date" id="data">
-
-<label>Operador:</label>
-<input type="text" id="operador" placeholder="Nome do operador">
-
-<label>Associado:</label>
-<input type="text" id="associado" placeholder="Nome do associado">
-
-<label>Modelo do Trator:</label>
-<input type="text" id="modelo" placeholder="Ex: Massey Ferguson 275">
-
-<label>Atividade:</label>
-<input type="text" id="atividade" placeholder="Ex: Aragem, transporte, pulverização">
-
-<label>Horímetro Inicial:</label>
-<input type="number" id="horimetroInicial" step="0.01" min="0">
-
-<label>Horímetro Final:</label>
-<input type="number" id="horimetroFinal" step="0.01" min="0">
-
-<div class="botoes-acoes">
-  <button onclick="registrar()">Registrar</button>
-  <button onclick="exportarCSV()">Exportar CSV</button>
-  <button class="btn-apagar" onclick="limparTodos()">Apagar Tudo</button>
-</div>
-
-<div id="mensagem"></div>
-
-<table id="tabela">
-  <thead>
-    <tr>
-      <th>Data</th>
-      <th>Operador</th>
-      <th>Associado</th>
-      <th>Modelo</th>
-      <th>Atividade</th>
-      <th>Horímetro Inicial</th>
-      <th>Horímetro Final</th>
-      <th>Horas Trabalhadas</th>
-      <th>Ações</th>
-    </tr>
-  </thead>
-  <tbody></tbody>
-</table>
-
 <script>
 let registros = JSON.parse(localStorage.getItem("registrosTrator")) || [];
+let filaSync = JSON.parse(localStorage.getItem("filaSync")) || [];
+
+// URL DO GOOGLE APPS SCRIPT (vamos criar depois)
+const URL_SHEET = "https://script.google.com/macros/s/AKfycbxaptskjOLWAyBeAFv5krO6m2VK7-GoKa0mvu28gvDuiy003wf_ylyVwM26IohZ_yBFWw/exec";
 
 function salvarLocal() {
   localStorage.setItem("registrosTrator", JSON.stringify(registros));
+}
+
+function salvarFilaSync() {
+  localStorage.setItem("filaSync", JSON.stringify(filaSync));
 }
 
 function calcularHorasTrabalhadas(hIni, hFim) {
@@ -91,8 +23,13 @@ function mostrarMensagem(texto, tipo) {
   msg.textContent = texto;
   msg.className = tipo;
   msg.style.display = "block";
+
+  setTimeout(() => msg.style.display = "none", 3000);
 }
 
+// -------------------------
+// 1️⃣ REGISTRAR
+// -------------------------
 function registrar() {
   const novoRegistro = {
     data: document.getElementById("data").value,
@@ -104,19 +41,31 @@ function registrar() {
     horimetroFinal: parseFloat(document.getElementById("horimetroFinal").value)
   };
 
-  novoRegistro.horasTrabalhadas = calcularHorasTrabalhadas(novoRegistro.horimetroInicial, novoRegistro.horimetroFinal);
+  novoRegistro.horasTrabalhadas = calcularHorasTrabalhadas(
+    novoRegistro.horimetroInicial,
+    novoRegistro.horimetroFinal
+  );
 
   registros.push(novoRegistro);
+  filaSync.push(novoRegistro);
+
   salvarLocal();
+  salvarFilaSync();
   atualizarTabela();
 
   document.querySelectorAll("input").forEach(i => i.value = "");
   mostrarMensagem("Registro salvo!", "sucesso");
+
+  sincronizar(); // tenta enviar automaticamente
 }
 
+// -------------------------
+// 2️⃣ ATUALIZAR TABELA
+// -------------------------
 function atualizarTabela() {
   const tbody = document.querySelector("#tabela tbody");
   tbody.innerHTML = "";
+
   registros.forEach((r, index) => {
     const tr = document.createElement("tr");
     tr.innerHTML = `
@@ -134,14 +83,60 @@ function atualizarTabela() {
   });
 }
 
+// -------------------------
+// 3️⃣ APAGAR REGISTRO
+// -------------------------
 function apagarRegistro(i) {
   registros.splice(i, 1);
   salvarLocal();
   atualizarTabela();
 }
 
+// -------------------------
+// 4️⃣ SINCRONIZAR COM A PLANILHA
+// -------------------------
+async function sincronizar() {
+  if (!URL_SHEET.startsWith("https://")) {
+    mostrarMensagem("URL da planilha não configurada!", "erro");
+    return;
+  }
+
+  if (filaSync.length === 0) {
+    mostrarMensagem("Nada para sincronizar", "sucesso");
+    return;
+  }
+
+  for (let item of filaSync) {
+    try {
+      await fetch(URL_SHEET, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(item)
+      });
+    } catch (e) {
+      mostrarMensagem("Falha na sincronização. Tentando depois...", "erro");
+      return;
+    }
+  }
+
+  filaSync = [];
+  salvarFilaSync();
+  mostrarMensagem("Sincronizado com sucesso!", "sucesso");
+}
+
+// -------------------------
+// 5️⃣ BOTÃO PARA APAGAR TUDO
+// -------------------------
+function limparTodos() {
+  if (!confirm("Tem certeza que deseja apagar tudo?")) return;
+
+  registros = [];
+  filaSync = [];
+  salvarLocal();
+  salvarFilaSync();
+  atualizarTabela();
+}
+
 atualizarTabela();
 </script>
-
-</body>
-</html>
